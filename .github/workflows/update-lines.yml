@@ -1,4 +1,4 @@
-name: Project Line & Status Updater
+name: Project Manager
 
 on:
   push:
