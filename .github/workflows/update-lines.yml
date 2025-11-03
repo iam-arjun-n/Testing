@@ -88,8 +88,8 @@ jobs:
           fi
           echo "duration=$duration" >> $GITHUB_ENV
 
-      - name: Install cloc
-        run: sudo apt-get install -y cloc jq
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cloc jq
 
       - name: Get language breakdown
         id: lang
@@ -101,7 +101,11 @@ jobs:
             entries="| N/A | 0 |"
           fi
           table="$table\n$entries"
-          echo -e "langs_table<<EOF\n$table\nEOF" >> $GITHUB_ENV
+          {
+            echo "langs_table<<EOF"
+            echo -e "$table"
+            echo "EOF"
+          } >> $GITHUB_ENV
 
       - name: Get repository size
         id: size
@@ -125,40 +129,29 @@ jobs:
 
       - name: Update README metrics
         run: |
-          repo_title=$(basename "$GITHUB_REPOSITORY")
+          metrics_block="### Status= ${new_status} (${duration})
+          ### Line Of Code= ${lines}
+          ### Languages
+          ${langs_table}
+          ### Repo Size= ${size}
+          ### Last Updated= ${timestamp}"
 
-          # Define section content
-          metrics_block=$(cat <<EOF
-### Status= $new_status ($duration)
-### Line Of Code= $lines
-### Languages
-${{ env.langs_table }}
-### Repo Size= ${{ env.size }}
-### Last Updated= ${{ env.timestamp }}
-EOF
-)
-
-          # Remove any existing metric sections
-          awk '
-            BEGIN {in_block=0}
-            /^### Status=/ {in_block=1}
-            in_block && /^### / && !/^### Status=/ {in_block=0}
-            !in_block
-          ' README.md > temp.md || true
-          mv temp.md README.md
-
-          # Remove orphaned placeholders if format changes
+          # Remove existing metric sections if present
+          sed -i '/^### Status=/,/^$/d' README.md
           sed -i '/^### Line Of Code=/d' README.md
           sed -i '/^### Languages/d' README.md
           sed -i '/^### Repo Size=/d' README.md
           sed -i '/^### Last Updated=/d' README.md
 
-          # Insert fresh ordered metrics section
-          if grep -q "^---$" README.md; then
-            sed -i "/^---$/a $metrics_block" README.md
-          else
-            echo -e "\n---\n$metrics_block" >> README.md
+          # Ensure section separator exists
+          if ! grep -q "^---$" README.md; then
+            echo -e "\n---\n" >> README.md
           fi
+
+          # Insert metrics block right after separator
+          awk -v block="$metrics_block" '
+            /^---$/ {print; print block; next} {print}
+          ' README.md > temp.md && mv temp.md README.md
 
       - name: Commit and Push
         run: |
@@ -166,7 +159,7 @@ EOF
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add README.md
           if ! git diff --cached --quiet; then
-            git commit -m "Auto-update: LOC=$lines | Status=$new_status ($duration)"
+            git commit -m "Auto-update: LOC=${lines} | Status=${new_status} (${duration})"
             git push
           else
             echo "No changes to commit."
