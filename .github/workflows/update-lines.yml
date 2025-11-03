@@ -88,26 +88,27 @@ jobs:
           fi
           echo "duration=$duration" >> $GITHUB_ENV
 
-      # ✅ NEW: Install cloc for language analysis
       - name: Install cloc
         run: sudo apt-get install -y cloc jq
 
-      # ✅ NEW: Get language breakdown
       - name: Get language breakdown
         id: lang
         run: |
-          langs=$(cloc . --exclude-dir=node_modules,.git,dist,build --quiet --json | \
-            jq -r '. | to_entries | sort_by(.value.code) | reverse | .[:3] | map("\(.key): \(.value.code) lines") | join(", ")')
-          echo "langs=$langs" >> $GITHUB_ENV
+          langs=$(cloc . --exclude-dir=node_modules,.git,dist,build --quiet --json)
+          table="| Language | Lines |\n|-----------|--------|"
+          entries=$(echo "$langs" | jq -r '. | to_entries | map(select(.key!="header" and .key!="SUM")) | sort_by(.value.code) | reverse | .[] | "| \(.key) | \(.value.code) |"')
+          if [ -z "$entries" ]; then
+            entries="| N/A | 0 |"
+          fi
+          table="$table\n$entries"
+          echo -e "langs_table<<EOF\n$table\nEOF" >> $GITHUB_ENV
 
-      # ✅ NEW: Get repository size
-      - name: Get repo size
+      - name: Get repository size
         id: size
         run: |
           size=$(du -sh --exclude=".git" . | cut -f1)
           echo "size=$size" >> $GITHUB_ENV
 
-      # ✅ NEW: Generate Last Updated timestamp
       - name: Get timestamp
         id: timestamp
         run: |
@@ -120,31 +121,44 @@ jobs:
           if [ ! -f README.md ]; then
             echo "# $repo_title" > README.md
             echo -e "\n---\n" >> README.md
-            echo "### Line Of Code= 0" >> README.md
-            echo "### Status= Not Started (0 days)" >> README.md
-            echo "### Languages= N/A" >> README.md
-            echo "### Repo Size= N/A" >> README.md
-            echo "### Last Updated= N/A" >> README.md
           fi
 
       - name: Update README metrics
         run: |
           repo_title=$(basename "$GITHUB_REPOSITORY")
 
-          # Ensure title and separator exist
-          if ! grep -q "^# " README.md; then
-            sed -i "1i# $repo_title\n\n---\n" README.md
-          fi
-          if ! grep -q "^---$" README.md; then
-            sed -i "/^# /a ---" README.md
-          fi
+          # Define section content
+          metrics_block=$(cat <<EOF
+### Status= $new_status ($duration)
+### Line Of Code= $lines
+### Languages
+${{ env.langs_table }}
+### Repo Size= ${{ env.size }}
+### Last Updated= ${{ env.timestamp }}
+EOF
+)
 
-          # Update or insert values
-          sed -i "s/^### Line Of Code=.*/### Line Of Code= $lines/" README.md || echo "### Line Of Code= $lines" >> README.md
-          sed -i "s/^### Status=.*/### Status= $new_status ($duration)/" README.md || echo "### Status= $new_status ($duration)" >> README.md
-          sed -i "s/^### Languages=.*/### Languages= $langs/" README.md || echo "### Languages= $langs" >> README.md
-          sed -i "s/^### Repo Size=.*/### Repo Size= $size/" README.md || echo "### Repo Size= $size" >> README.md
-          sed -i "s/^### Last Updated=.*/### Last Updated= $timestamp/" README.md || echo "### Last Updated= $timestamp" >> README.md
+          # Remove any existing metric sections
+          awk '
+            BEGIN {in_block=0}
+            /^### Status=/ {in_block=1}
+            in_block && /^### / && !/^### Status=/ {in_block=0}
+            !in_block
+          ' README.md > temp.md || true
+          mv temp.md README.md
+
+          # Remove orphaned placeholders if format changes
+          sed -i '/^### Line Of Code=/d' README.md
+          sed -i '/^### Languages/d' README.md
+          sed -i '/^### Repo Size=/d' README.md
+          sed -i '/^### Last Updated=/d' README.md
+
+          # Insert fresh ordered metrics section
+          if grep -q "^---$" README.md; then
+            sed -i "/^---$/a $metrics_block" README.md
+          else
+            echo -e "\n---\n$metrics_block" >> README.md
+          fi
 
       - name: Commit and Push
         run: |
