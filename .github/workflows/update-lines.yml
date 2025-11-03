@@ -1,0 +1,139 @@
+name: Project Line & Status Updater
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      status:
+        description: "Select project status"
+        required: false
+        type: choice
+        options:
+          - Not Started
+          - In Progress
+          - Completed
+          - Skip
+  schedule:
+    - cron: "0 0 * * *" # daily check for freeze
+
+permissions:
+  contents: write
+
+jobs:
+  update_readme:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Count lines of code
+        id: count
+        run: |
+          lines=$(find . -type f \
+            ! -path "./node_modules/*" \
+            ! -path "./.git/*" \
+            ! -path "./dist/*" \
+            ! -path "./build/*" \
+            -exec cat {} + | wc -l)
+          echo "lines=$lines" >> $GITHUB_ENV
+
+      - name: Get last commit date
+        id: commit
+        run: |
+          last_commit_date=$(git log -1 --format=%cI)
+          echo "last_commit_date=$last_commit_date" >> $GITHUB_ENV
+
+      - name: Calculate inactivity duration
+        id: calc
+        run: |
+          now=$(date -u +%s)
+          last_commit=$(date -d "${last_commit_date}" +%s)
+          diff_days=$(( (now - last_commit) / 86400 ))
+          echo "days=$diff_days" >> $GITHUB_ENV
+
+      - name: Determine project status
+        id: status
+        run: |
+          input="${{ github.event.inputs.status }}"
+          days=${{ env.days }}
+          if [ "$input" = "Skip" ] || [ -z "$input" ]; then
+            if [ "$days" -ge 30 ]; then
+              new_status="Frozen"
+            else
+              new_status="Not Started"
+            fi
+          else
+            new_status="$input"
+          fi
+          echo "new_status=$new_status" >> $GITHUB_ENV
+
+      - name: Format duration
+        id: duration
+        run: |
+          days=${{ env.days }}
+          if [ "$days" -lt 30 ]; then
+            duration="$days days"
+          elif [ "$days" -lt 365 ]; then
+            months=$((days / 30))
+            duration="$months months"
+          else
+            years=$((days / 365))
+            rem=$(( (days % 365) / 30 ))
+            duration="${years} years ${rem} months"
+          fi
+          echo "duration=$duration" >> $GITHUB_ENV
+
+      - name: Ensure README exists
+        run: |
+          repo_title=$(basename "$GITHUB_REPOSITORY")
+          if [ ! -f README.md ]; then
+            echo "# $repo_title" > README.md
+            echo -e "\n---\n" >> README.md
+            echo "### Line Of Code= 0" >> README.md
+            echo "### Status= Not Started (0 days)" >> README.md
+          fi
+
+      - name: Update or Insert Line/Status
+        run: |
+          repo_title=$(basename "$GITHUB_REPOSITORY")
+
+          # Ensure title section exists
+          if ! grep -q "^# " README.md; then
+            sed -i "1i# $repo_title\n\n---\n" README.md
+          fi
+
+          # Ensure a separator after the title
+          if ! grep -q "^---$" README.md; then
+            sed -i "/^# /a ---" README.md
+          fi
+
+          # Update or insert the line of code
+          if grep -q "### Line Of Code=" README.md; then
+            sed -i "s/### Line Of Code=.*/### Line Of Code= $lines/" README.md
+          else
+            sed -i "/^---$/a ### Line Of Code= $lines" README.md
+          fi
+
+          # Update or insert the status line
+          if grep -q "### Status=" README.md; then
+            sed -i "s/### Status=.*/### Status= $new_status ($duration)/" README.md
+          else
+            sed -i "/### Line Of Code=.*/a ### Status= $new_status ($duration)" README.md
+          fi
+
+      - name: Commit and Push
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          if ! git diff --cached --quiet; then
+            git commit -m "Auto-update: LOC=$lines | Status=$new_status ($duration)"
+            git push
+          else
+            echo "No changes to commit."
+          fi
